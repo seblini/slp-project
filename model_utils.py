@@ -7,6 +7,7 @@ from omegaconf import OmegaConf
 import hubert_pretraining, hubert, hubert_asr # type: ignore
 
 import torch
+import numpy as np
 
 def prep_inference(video_path, model, cfg, task):
     num_frames = int(cv2.VideoCapture(video_path).get(cv2.CAP_PROP_FRAME_COUNT))
@@ -60,4 +61,9 @@ def run_inference_and_extract_soft_targets(model, itr, temperature=1.0):
 
         return torch.softmax(logits / temperature, dim=-1)
 
-
+def crops_to_tensor(crops):
+    frames = crops.astype(np.float32) / 255.0
+    frames = (frames - 0.421) / 0.165
+    
+    tensor = torch.FloatTensor(frames).unsqueeze(0).unsqueeze(2)
+    return tensor

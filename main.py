@@ -14,10 +14,14 @@ import os
 
 from mp import process_video, save_crops_as_video, plot_crops
 
-from model_utils import prep_inference, run_inference_and_extract_soft_targets
+from model_utils import prep_inference, run_inference_and_extract_soft_targets, crops_to_tensor
 
 import logging
 import warnings
+
+from student_model import StudentLipReader, DistillationTrainer
+
+import torch
 
 # Remove noisy warnings
 warnings.filterwarnings("ignore")
@@ -55,3 +59,37 @@ itr, generator, hypo_token_decoder  = prep_inference(os.path.abspath("AFTERNOON-
 soft_targets = run_inference_and_extract_soft_targets(model, itr)
 print(soft_targets)
 print(soft_targets.shape)
+
+VOCAB_SIZE = 1000
+PAD_IDX = 1
+BOS_IDX = 0
+BATCH_SIZE = 1
+NUM_FRAMES = 29
+SEQ_LEN = 5
+
+# Initialize student model
+student = StudentLipReader(
+    vocab_size=VOCAB_SIZE,
+    embed_dim=256,
+    encoder_layers=4,
+    decoder_layers=4,
+    n_heads=4,
+    ff_dim=512,
+    pad_idx=PAD_IDX,
+    freeze_early_resnet=True,
+)
+
+# Prepare training data
+video_frames = crops_to_tensor(crops)
+prev_tokens = torch.randint(0, VOCAB_SIZE, (BATCH_SIZE, SEQ_LEN))
+prev_tokens[:, 0] = BOS_IDX
+hard_targets = torch.randint(0, VOCAB_SIZE, (BATCH_SIZE, SEQ_LEN))
+teacher_soft_targets = torch.softmax(torch.randn(BATCH_SIZE, SEQ_LEN, VOCAB_SIZE), dim=-1)
+
+# Run training step
+trainer = DistillationTrainer(student, temperature=2.0, alpha=0.7)
+losses = trainer.train_step(video_frames, prev_tokens, teacher_soft_targets, hard_targets)
+
+print(f"Combined loss: {losses['loss']:.4f}")
+print(f"Soft loss:     {losses['soft_loss']:.4f}")
+print(f"Hard loss:     {losses['hard_loss']:.4f}")

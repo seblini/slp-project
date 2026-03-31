@@ -50,3 +50,8 @@ Download the example video from Oxford-BBC LRW website
 ```
 wget -O AFTERNOON.mp4 https://www.robots.ox.ac.uk/~vgg/data/lip_reading/data/AFTERNOON.mp4
 ```
+
+Install torchvision to get the resnet model
+```
+pip install torchvision
+```
