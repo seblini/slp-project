@@ -3,6 +3,7 @@ from mediapipe.tasks import python
 from mediapipe.tasks.python import vision
 import cv2
 import numpy as np
+import matplotlib.pyplot as plt
 
 def extract_lip_crop(frame, detector, target_size=(96, 96)):
     mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=frame)
@@ -99,3 +100,15 @@ def save_crops_as_video(crops, output_path, fps=25):
         out.write(frame)
     out.release()
     print(f"Saved {len(crops)} frames to {output_path}")
+
+def plot_crops(crops):
+    if len(crops) > 0:
+        num_show = min(8, len(crops))
+        fig, axes = plt.subplots(1, num_show, figsize=(16, 3))
+        for i, ax in enumerate(axes):
+            idx = i * (len(crops) // num_show)
+            ax.imshow(crops[idx], cmap='gray')
+            ax.axis('off')
+            ax.set_title(f"F{idx}")
+        plt.suptitle(f"Lip crops (resampled to 25fps, {len(crops)} frames)")
+        plt.savefig("crops.png")
