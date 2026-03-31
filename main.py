@@ -37,8 +37,6 @@ ckpt_path = "checkpoint.pt"
 models, cfg, task = fairseq.checkpoint_utils.load_model_ensemble_and_task([ckpt_path])
 model = models[0].eval()
 
-# print(model)
-
 # Download mediapipe model
 url = "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/latest/face_landmarker.task"
 if not os.path.exists("face_landmarker.task"):
@@ -57,8 +55,6 @@ itr, generator, hypo_token_decoder  = prep_inference(os.path.abspath("AFTERNOON-
 
 # Run inference and extract soft targets
 soft_targets = run_inference_and_extract_soft_targets(model, itr)
-print(soft_targets)
-print(soft_targets.shape)
 
 VOCAB_SIZE = 1000
 PAD_IDX = 1
@@ -78,6 +74,8 @@ student = StudentLipReader(
     pad_idx=PAD_IDX,
     freeze_early_resnet=True,
 )
+print()
+student.print_parameter_breakdown()
 
 # Prepare training data
 video_frames = crops_to_tensor(crops)
@@ -90,6 +88,6 @@ teacher_soft_targets = torch.softmax(torch.randn(BATCH_SIZE, SEQ_LEN, VOCAB_SIZE
 trainer = DistillationTrainer(student, temperature=2.0, alpha=0.7)
 losses = trainer.train_step(video_frames, prev_tokens, teacher_soft_targets, hard_targets)
 
-print(f"Combined loss: {losses['loss']:.4f}")
+print(f"\nCombined loss: {losses['loss']:.4f}")
 print(f"Soft loss:     {losses['soft_loss']:.4f}")
 print(f"Hard loss:     {losses['hard_loss']:.4f}")
