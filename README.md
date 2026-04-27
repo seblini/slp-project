@@ -76,5 +76,13 @@ tar xvjf lrw-v1.tar.bz2
 mv lip_reading lrw_mp4
 ```
 
-
-
+Command ran on this baseline
+```
+python student/train_student.py \
+    --videos data/lrw_pp_video/ABOUT_PRISON_pp_video.h5 \
+    --logits data/lrw_logit/ABOUT_PRISON_logits.h5 \
+    --ckpt data/checkpoints/checkpoint.pt \
+    --out_dir runs/student_v1 \
+    --batch_size 32 \
+    --epochs 20
+```

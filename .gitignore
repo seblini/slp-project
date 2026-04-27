@@ -3,3 +3,4 @@ pyrightconfig.json
 .venv
 .python-version
 data/
+runs/
