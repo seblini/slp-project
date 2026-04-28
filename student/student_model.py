@@ -133,3 +133,119 @@ class VideoStudent(nn.Module):
         if only_trainable:
             return sum(p.numel() for p in self.parameters() if p.requires_grad)
         return sum(p.numel() for p in self.parameters())
+
+    @torch.no_grad()
+    def beam_search_decode(self, video, video_mask, beam_size=5, max_len=20,
+                           length_penalty=1.0):
+        """
+        Standard beam search with length normalization.
+        
+        Args:
+            video: (B, T, 1, H, W)
+            video_mask: (B, T)
+            beam_size: number of beams to keep at each step
+            max_len: max decode length
+            length_penalty: 1.0 = no penalty, >1 favors longer, <1 favors shorter
+        
+        Returns:
+            best_tokens: (B, T_dec) — top-1 hypothesis per sample
+        """
+        device = video.device
+        B = video.shape[0]
+        K = beam_size
+        
+        # Encode once, expand for each beam
+        enc = self.encode(video, padding_mask=video_mask)  # (B, T_v, D)
+        enc = enc.unsqueeze(1).expand(-1, K, -1, -1).reshape(B*K, *enc.shape[1:])
+        enc_mask = video_mask.unsqueeze(1).expand(-1, K, -1).reshape(B*K, -1)
+        
+        # Initialize beams: each starts with BOS, score 0
+        tokens = torch.full((B*K, 1), self.bos_id, dtype=torch.long, device=device)
+        scores = torch.zeros(B, K, device=device)
+        # Force only first beam per sample to be "alive"; others get -inf
+        # so duplicate beams don't all expand from BOS in step 0
+        scores[:, 1:] = float('-inf')
+        
+        finished = torch.zeros(B, K, dtype=torch.bool, device=device)
+        finished_scores = torch.full((B, K), float('-inf'), device=device)
+        finished_seqs = [[None] * K for _ in range(B)]
+        
+        for step in range(max_len):
+            # Decode current step for all B*K beams
+            logits = self.decode(enc, tokens, encoder_padding_mask=enc_mask)
+            next_logits = logits[:, -1, :]  # (B*K, V)
+            log_probs = torch.log_softmax(next_logits, dim=-1)  # (B*K, V)
+            
+            # Combine with cumulative beam score
+            log_probs = log_probs.view(B, K, -1)
+            cum_scores = scores.unsqueeze(-1) + log_probs  # (B, K, V)
+            
+            # Mask finished beams: only allow them to "produce" PAD with their current score
+            # so their cumulative score doesn't change
+            if finished.any():
+                fin_mask = finished.unsqueeze(-1)  # (B, K, 1)
+                cum_scores = cum_scores.masked_fill(fin_mask, float('-inf'))
+                # For finished beams, set the PAD-token score to the existing beam score
+                pad_scores = cum_scores[..., self.pad_id]  # (B, K)
+                pad_scores = torch.where(finished, scores, pad_scores)
+                cum_scores[..., self.pad_id] = pad_scores
+            
+            # Pick top K from K*V candidates per sample
+            flat = cum_scores.view(B, -1)  # (B, K*V)
+            top_scores, top_idx = flat.topk(K, dim=-1)  # (B, K)
+            
+            beam_idx = top_idx // log_probs.shape[-1]   # which beam (0..K-1)
+            token_idx = top_idx % log_probs.shape[-1]    # which token (0..V-1)
+            
+            # Reorder tokens by chosen beams, append new token
+            tokens = tokens.view(B, K, -1)
+            tokens = torch.gather(tokens, 1,
+                                  beam_idx.unsqueeze(-1).expand(-1, -1, tokens.shape[-1]))
+            tokens = torch.cat([tokens, token_idx.unsqueeze(-1)], dim=-1)
+            tokens = tokens.view(B*K, -1)
+            
+            # Reorder finished mask
+            finished = torch.gather(finished, 1, beam_idx)
+            scores = top_scores
+            
+            # Mark new EOS as finished
+            new_eos = (token_idx == self.eos_id) & ~finished
+            for b in range(B):
+                for k in range(K):
+                    if new_eos[b, k]:
+                        seq = tokens.view(B, K, -1)[b, k].tolist()
+                        # Length-normalize the score
+                        norm = ((step + 1) ** length_penalty)
+                        final_score = scores[b, k].item() / norm
+                        if final_score > finished_scores[b, k].item():
+                            finished_scores[b, k] = final_score
+                            finished_seqs[b][k] = seq
+            finished = finished | new_eos
+            
+            if finished.all():
+                break
+        
+        # For any beam that never finished, use its current sequence
+        tokens_view = tokens.view(B, K, -1)
+        for b in range(B):
+            for k in range(K):
+                if finished_seqs[b][k] is None:
+                    norm = ((tokens_view.shape[-1]) ** length_penalty)
+                    finished_scores[b, k] = scores[b, k].item() / norm
+                    finished_seqs[b][k] = tokens_view[b, k].tolist()
+        
+        # Pick best beam per sample
+        best_idx = finished_scores.argmax(dim=-1)  # (B,)
+        best_tokens = []
+        for b in range(B):
+            seq = finished_seqs[b][best_idx[b].item()]
+            # Drop BOS
+            seq = seq[1:]
+            best_tokens.append(torch.tensor(seq, dtype=torch.long))
+        
+        # Pad to same length for batching
+        max_T = max(t.shape[0] for t in best_tokens)
+        out = torch.full((B, max_T), self.pad_id, dtype=torch.long, device=device)
+        for b, t in enumerate(best_tokens):
+            out[b, :t.shape[0]] = t.to(device)
+        return out
