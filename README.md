@@ -76,13 +76,36 @@ tar xvjf lrw-v1.tar.bz2
 mv lip_reading lrw_mp4
 ```
 
-Command ran on this baseline
+Install g2p_en to convert BPE tokens to English phonemes
 ```
-python student/train_student.py \
+pip install g2p_en
+```
+
+Donwload g2p_en depencencies
+```
+python -c "
+import nltk
+nltk.download('averaged_perceptron_tagger_eng')
+nltk.download('cmudict')
+"
+```
+
+Generate token temperatures
+```
+python student/build_viseme_temperatures.py \
+    --t_min 1.5 \
+    --t_max 6.0 \
+    --output data/misc/token_temperatures_mean2_01.npy
+```
+
+Train student model
+```
+python train_student.py \
     --videos data/lrw_pp_video/ABOUT_PRISON_pp_video.h5 \
     --logits data/lrw_logit/ABOUT_PRISON_logits.h5 \
     --ckpt data/checkpoints/checkpoint.pt \
-    --out_dir runs/student_v1 \
+    --out_dir runs/student_viseme \
     --batch_size 32 \
-    --epochs 20
+    --epochs 20 \
+    --token_temperatures data/misc/token_temperatures_mean2_01.npy 2>&1 | tee runs/student_viseme.log
 ```

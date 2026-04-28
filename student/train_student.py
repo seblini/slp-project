@@ -3,14 +3,15 @@ import os
 import time
 import sys
 from pathlib import Path
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-AVHUBERT_PARENT = (Path(__file__).parent / "../av_hubert").resolve()
-FAIRSEQ_PATH = (Path(__file__).parent / "../av_hubert/fairseq").resolve()
+AVHUBERT_PARENT = (Path(__file__).parent / "../../av_hubert").resolve()
+FAIRSEQ_PATH = (Path(__file__).parent / "../../av_hubert/fairseq").resolve()
 sys.path.insert(0, str(AVHUBERT_PARENT))
 sys.path.insert(0, str(FAIRSEQ_PATH))
 
@@ -38,28 +39,32 @@ def get_special_token_ids(ckpt_path):
 
 
 def kd_loss(student_logits, teacher_logits, teacher_tokens, decoder_mask,
-            temperature=2.0, alpha=0.5, pad_id=1):
+            temperature=2.0, alpha=0.5, pad_id=1, token_temperatures=None):
     """
-    Combined distillation loss:
-      KD term: KL(student || teacher) at temperature T
-      CE term: cross-entropy on teacher's greedy tokens (hard targets)
-      total = alpha * KD + (1 - alpha) * CE
+    Args:
+        token_temperatures: optional (V,) tensor of per-token temperatures.
+            If provided, the temperature at each decoder position is determined by
+            the teacher's token at that position. Otherwise, uses scalar `temperature`.
     """
-    # student_logits, teacher_logits: (B, T_d, V)
-    # teacher_tokens: (B, T_d)
-    # decoder_mask: (B, T_d), True = padded
+    if token_temperatures is not None:
+        # Per-position temperature based on teacher's chosen token
+        T = token_temperatures[teacher_tokens].unsqueeze(-1)  # (B, T_d, 1)
+    else:
+        T = temperature
     
-    valid = (~decoder_mask).float().unsqueeze(-1)  # (B, T_d, 1)
-    
-    # Soft target loss (KL with temperature)
-    s_log = F.log_softmax(student_logits / temperature, dim=-1)
-    t_soft = F.softmax(teacher_logits / temperature, dim=-1)
+    s_log = F.log_softmax(student_logits / T, dim=-1)
+    t_soft = F.softmax(teacher_logits / T, dim=-1)
     kl = -(t_soft * s_log).sum(dim=-1)  # (B, T_d)
-    kl = kl * (~decoder_mask).float()
-    kd_term = kl.sum() / (~decoder_mask).float().sum().clamp(min=1.0)
-    kd_term = kd_term * (temperature ** 2)  # standard KD scaling
     
-    # Hard target loss (CE against teacher's greedy tokens)
+    # Scale by T² (per-position when T varies)
+    if isinstance(T, torch.Tensor):
+        kl = kl * (T.squeeze(-1) ** 2)
+    else:
+        kl = kl * (T ** 2)
+    
+    valid = (~decoder_mask).float()
+    kd_term = (kl * valid).sum() / valid.sum().clamp(min=1.0)
+    
     ce = F.cross_entropy(
         student_logits.reshape(-1, student_logits.shape[-1]),
         teacher_tokens.reshape(-1),
@@ -122,10 +127,21 @@ def main():
     ap.add_argument('--dim', type=int, default=256)
     ap.add_argument('--enc_layers', type=int, default=4)
     ap.add_argument('--dec_layers', type=int, default=4)
+    ap.add_argument('--token_temperatures', default=None,
+                help='Path to .npy file with per-token temperatures (viseme-conditioned)')
     args = ap.parse_args()
-    
+
     os.makedirs(args.out_dir, exist_ok=True)
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
+
+    token_temperatures = None
+    if args.token_temperatures:
+        print(f"Loading token temperatures from {args.token_temperatures}")
+        token_temperatures = torch.from_numpy(
+            np.load(args.token_temperatures)
+        ).to(device)
+        print(f"  range: [{token_temperatures.min():.2f}, {token_temperatures.max():.2f}]")
+        print(f"  mean: {token_temperatures.mean():.2f}")
     
     # Special token ids from teacher's dictionary
     print("Loading teacher dictionary for vocab info...")
@@ -200,10 +216,10 @@ def main():
                 student_logits = model(video, video_mask, prev_tokens,
                                        decoder_mask=decoder_mask)
                 loss, kd_val, ce_val = kd_loss(
-                    student_logits.float(), teacher_logits, teacher_tokens,
-                    decoder_mask,
+                    student_logits.float(), teacher_logits, teacher_tokens, decoder_mask,
                     temperature=args.temperature, alpha=args.alpha,
                     pad_id=special['pad_id'],
+                    token_temperatures=token_temperatures,
                 )
             
             scaler.scale(loss).backward()
