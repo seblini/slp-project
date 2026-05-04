@@ -3,15 +3,13 @@ import torch
 from pathlib import Path
 import h5py
 
-AVHUBERT_PARENT = (Path('.') / "../av_hubert").resolve()
-AVHUBERT_DIR = (Path('.') / "../av_hubert/avhubert").resolve()
-FAIRSEQ_PATH = (Path('.') / "../av_hubert/fairseq").resolve()
+AVHUBERT_PARENT = (Path(__file__).parent / "../../av_hubert").resolve()
+FAIRSEQ_PATH = (Path(__file__).parent / "../../av_hubert/fairseq").resolve()
 sys.path.insert(0, str(AVHUBERT_PARENT))
-sys.path.insert(0, str(AVHUBERT_DIR))
 sys.path.insert(0, str(FAIRSEQ_PATH))
 
 import fairseq
-import hubert_pretraining, hubert, hubert_asr  # noqa
+from avhubert import hubert_pretraining, hubert, hubert_asr
 from student_model import VideoStudent
 from student_dataset import LRWDistillationDataset
 
@@ -21,7 +19,7 @@ _, _, task = fairseq.checkpoint_utils.load_model_ensemble_and_task(
 d = task.target_dictionary
 
 # Load student
-ckpt = torch.load('runs/student_v1/best.pt', map_location='cuda', weights_only=False)
+ckpt = torch.load(sys.argv[1], map_location='cuda', weights_only=False)
 student = VideoStudent(
     vocab_size=1000,
     pad_id=d.pad(), bos_id=d.bos(), eos_id=d.eos(),
